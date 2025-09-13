@@ -1,0 +1,18 @@
+name: ClickLimiter
+version: 1.0.0
+main: com.ratger.clicklimiter.ClickLimiter
+api-version: '1.21'
+authors: [ ratger ]
+description: Limits the maximum CPS
+website: https://minetoday.org
+depend: [ packetevents ]
+
+commands:
+  cl-reload:
+    description: Reloads the value from the config
+    usage: /cl-reload
+
+permissions:
+  clicklimiter.reload:
+    description: Allows using /cl-reload
+    default: op
