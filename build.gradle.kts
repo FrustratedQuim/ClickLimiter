@@ -21,7 +21,7 @@ dependencies {
 
     implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.2.10")
     implementation("net.kyori:adventure-text-minimessage:4.24.0")
-    compileOnly("com.github.retrooper:packetevents-spigot:2.9.4")
+    compileOnly("com.github.retrooper:packetevents-spigot:2.9.5")
 }
 
 java {
