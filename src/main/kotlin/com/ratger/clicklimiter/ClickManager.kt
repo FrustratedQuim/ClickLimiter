@@ -5,137 +5,124 @@ import com.github.retrooper.packetevents.event.PacketListenerAbstract
 import com.github.retrooper.packetevents.event.PacketListenerPriority
 import com.github.retrooper.packetevents.event.PacketReceiveEvent
 import com.github.retrooper.packetevents.protocol.packettype.PacketType
-import com.github.retrooper.packetevents.protocol.player.DiggingAction
-import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientPlayerDigging
-import org.bukkit.Bukkit
 import org.bukkit.GameMode
 import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
 import org.bukkit.event.Listener
+import org.bukkit.event.player.PlayerJoinEvent
 import org.bukkit.event.player.PlayerQuitEvent
-import org.bukkit.plugin.java.JavaPlugin
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
-import kotlin.collections.ArrayDeque
-import kotlin.collections.MutableMap
-import kotlin.collections.component1
-import kotlin.collections.component2
-import kotlin.collections.getOrPut
-import kotlin.collections.isNotEmpty
-import kotlin.collections.set
+import kotlin.collections.mutableMapOf
 
-class ClickManager(plugin: JavaPlugin, private val configManager: ConfigManager) : Listener {
-    private val diggingPlayers = ConcurrentHashMap.newKeySet<UUID>()
-    private val lastAnimation : MutableMap<UUID, Long> = ConcurrentHashMap()
-    private val clickWindows : MutableMap<UUID, ClickWindow> = ConcurrentHashMap()
+class ClickManager(private val configManager: ConfigManager) : Listener {
 
-    private val resetTime : Long = 60_000
+    private val players = mutableMapOf<UUID, UserData>()
+
+    private var maxCpsValue = 0
+    private var maxClickRate = 0
 
     init {
         registerPacketListener()
+        updateData()
+    }
 
-        Bukkit.getScheduler().runTaskTimerAsynchronously(plugin, Runnable {
-            val now = System.currentTimeMillis()
-            clickWindows.entries.removeIf { (uuid, window) ->
-                val lastClick = window.getLastClickTime()
-                lastClick != null && now - lastClick > resetTime
-            }
-            lastAnimation.entries.removeIf { now - it.value > resetTime }
-        }, 0L, resetTime / 50)
+    @EventHandler
+    fun onPlayerJoin(event: PlayerJoinEvent) {
+        val uuid = event.player.uniqueId
+        val isBypass = event.player.hasPermission("clicklimiter.bypass")
+        players[uuid] = UserData(
+            UserClicks(maxCpsValue),
+            false,
+            isBypass
+        )
+    }
+
+    @EventHandler
+    fun onPlayerQuit(event: PlayerQuitEvent) {
+        players.remove(event.player.uniqueId)
     }
 
     private fun registerPacketListener() {
         val listener = object : PacketListenerAbstract(PacketListenerPriority.LOWEST) {
-            override fun onPacketReceive(event: PacketReceiveEvent?) {
-                val type = event?.packetType ?: return
+            override fun onPacketReceive(event: PacketReceiveEvent) {
+                val type = event.packetType
+                // Пакет ANIMATION провоцирует лишь левый клик
+                if (type != PacketType.Play.Client.ANIMATION && type != PacketType.Play.Client.PLAYER_DIGGING) return
+
                 val player = event.getPlayer() as? Player ?: return
                 val uuid = player.uniqueId
-                val now = System.currentTimeMillis()
 
-                when (type) {
+                if (players[uuid]!!.isBypass) return
 
-                    // Анимация удара начинает непрерывно прокидываться при копании, поэтому подобное нужно исключить из учёта
-                    PacketType.Play.Client.PLAYER_DIGGING -> {
-                        // Игрок в креативе прокидывает лишь пакет START_DIGGING
-                        if (player.gameMode == GameMode.CREATIVE) return
-
-                        val packet = WrapperPlayClientPlayerDigging(event)
-                        when (packet.action) {
-                            DiggingAction.START_DIGGING -> diggingPlayers.add(uuid)
-                            DiggingAction.CANCELLED_DIGGING, DiggingAction.FINISHED_DIGGING -> diggingPlayers.remove(uuid)
-                            else -> {}
-                        }
-                    }
-                    PacketType.Play.Client.ANIMATION -> {
-                        if (uuid in diggingPlayers) return
-                        lastAnimation[uuid] = now
-                        handleClick(player) { event.isCancelled = true }
+                // Пакет копания всегда идёт парой - при начале и конце, поэтому подобная проверка безопасна.
+                // Игрок в креативе пропускается, так-как в его случае анимации копания нет и отсылается лишь пакет начала.
+                if (type == PacketType.Play.Client.PLAYER_DIGGING) {
+                    if (player.gameMode != GameMode.CREATIVE) {
+                        players[uuid]!!.isDigging = !players[uuid]!!.isDigging
+                        return
                     }
                 }
+
+                if (!players[uuid]!!.isDigging) handleClick(uuid) { event.isCancelled = true }
             }
         }
         PacketEvents.getAPI().eventManager.registerListener(listener)
     }
 
-    @EventHandler
-    fun onPlayerQuit(event: PlayerQuitEvent) {
-        clickWindows.remove(event.player.uniqueId)
-        diggingPlayers.remove(event.player.uniqueId)
-        lastAnimation.remove(event.player.uniqueId)
-    }
-
-    private fun handleClick(player: Player, cancelAction: () -> Unit) {
-        val uuid = player.uniqueId
+    private fun handleClick(uuid: UUID, cancelAction: () -> Unit) {
         val now = System.currentTimeMillis()
-        val window = clickWindows.getOrPut(uuid) { ClickWindow() }
-        val maxCps = configManager.getMaxCpsValue()
+        val buffer = players[uuid]!!.clicks
 
-        val cps = window.getCps(now)
-        if (cps >= maxCps) {
-            val lastClickTime = window.getLastClickTime()
-            if (lastClickTime != null && now - lastClickTime < 1000 / maxCps) {
-                cancelAction()
-                return
-            }
+        if (buffer.countValidClicks(now) >= maxCpsValue && now - buffer.lastClick() < maxClickRate) {
+            cancelAction()
+            return
         }
 
-        window.addClick(now)
+        buffer.add(now)
     }
 
-    class ClickWindow {
-        private val clickTimes = ArrayDeque<Long>()
-        private var cachedCps: Int = 0
-        private var lastCleanup: Long = 0
+    fun updateData() {
+        maxCpsValue = configManager.getMaxCpsValue()
+        maxClickRate = (1000 / maxCpsValue)
 
-        fun addClick(now: Long) {
-            synchronized(clickTimes) {
-                clickTimes.add(now)
-                cleanOldClicks(now)
-                cachedCps = clickTimes.size
-            }
-        }
-
-        fun getCps(now: Long): Int {
-            synchronized(clickTimes) {
-                if (now - lastCleanup >= 1000) {
-                    cleanOldClicks(now)
-                    cachedCps = clickTimes.size
-                }
-                return clickTimes.size
-            }
-        }
-
-        private fun cleanOldClicks(now: Long) {
-            while (clickTimes.isNotEmpty() && clickTimes.first() < now - 1000) {
-                clickTimes.removeFirst()
-            }
-            lastCleanup = now
-        }
-
-        fun getLastClickTime(): Long? {
-            synchronized(clickTimes) {
-                return clickTimes.lastOrNull()
-            }
+        players.forEach { (uuid, userData) ->
+            players[uuid] = UserData(
+                UserClicks(maxCpsValue),
+                userData.isDigging,
+                userData.isBypass
+            )
         }
     }
+}
+
+private class UserData(
+    val clicks: UserClicks,
+    var isDigging: Boolean,
+    var isBypass: Boolean
+)
+
+// Мы юзаем кольцевой буфер, чтобы не тратить операции на удаление и добавление элементов.
+// Перезапись менее затратна.
+private class UserClicks(size: Int) {
+    val times = LongArray(size)
+    var index = 0
+    private var count = 0
+    private var oldest = 0
+
+    fun add(time: Long) {
+        times[index] = time
+        index = (index + 1) % times.size
+        if (count < times.size) count++ else oldest = (oldest + 1) % times.size
+    }
+
+    // Количество кликов за последнюю секунду
+    fun countValidClicks(currentTime: Long): Int {
+        while (count > 0 && currentTime - times[oldest] > 1000) {
+            oldest = (oldest + 1) % times.size
+            count--
+        }
+        return count
+    }
+
+    fun lastClick(): Long = if (count == 0) 0 else times[(index - 1 + times.size) % times.size]
 }

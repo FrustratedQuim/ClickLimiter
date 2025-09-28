@@ -3,22 +3,19 @@ package com.ratger.clicklimiter
 import org.bukkit.plugin.java.JavaPlugin
 
 class ClickLimiter : JavaPlugin() {
-    private lateinit var configManager: ConfigManager
     private lateinit var clickManager: ClickManager
+    private lateinit var configManager: ConfigManager
 
     override fun onEnable() {
         configManager = ConfigManager(this)
-        configManager.loadConfig()
+        clickManager = ClickManager(configManager)
 
-        clickManager = ClickManager(this, configManager)
+        configManager.updateConfig()
+
+        getCommand("cl-set")?.setExecutor(CommandManager(configManager, clickManager))
+        getCommand("cl-set")?.tabCompleter = CommandManager(configManager, clickManager)
+
         server.pluginManager.registerEvents(clickManager, this)
-
-        getCommand("cl-reload")?.setExecutor(CommandManager(configManager))
-
         logger.info("ClickLimiter enabled. Max CPS: ${configManager.getMaxCpsValue()}")
-    }
-
-    override fun onDisable() {
-        logger.info("ClickLimiter disabled.")
     }
 }
