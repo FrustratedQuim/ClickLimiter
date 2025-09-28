@@ -19,7 +19,7 @@ repositories {
 dependencies {
     paperweight.paperDevBundle("1.21.1-R0.1-SNAPSHOT")
 
-    implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.2.10")
+    implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.2.20")
     implementation("net.kyori:adventure-text-minimessage:4.24.0")
     compileOnly("com.github.retrooper:packetevents-spigot:2.9.4")
 }
